@@ -1,0 +1,10 @@
+# environment variables
+.env*
+venv/
+
+# pycache files
+__pycache__/
+*/**/__pycache__/
+
+# AI Files
+PRD_extracted.txt
