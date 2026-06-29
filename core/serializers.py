@@ -141,6 +141,18 @@ class CustomerSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_at"]
 
 
+class CustomerCreateSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=120)
+    phone = serializers.CharField(max_length=40, required=False, allow_blank=True)
+    email = serializers.EmailField(required=False, allow_blank=True)
+    zone = serializers.CharField(max_length=60, required=False, allow_blank=True)
+
+    def validate(self, attrs):
+        if not (attrs.get("phone") or "").strip() and not (attrs.get("email") or "").strip():
+            raise serializers.ValidationError("Provide an email or a phone number.")
+        return attrs
+
+
 class CourierSerializer(serializers.ModelSerializer):
     branch_name = serializers.CharField(source="branch.name", read_only=True)
     active_delivery = serializers.SerializerMethodField()
@@ -209,6 +221,7 @@ class DeliveryCreateSerializer(serializers.Serializer):
     pickup_address = serializers.CharField(max_length=240)
     delivery_address = serializers.CharField(max_length=240)
     zone = serializers.CharField(max_length=60, required=False, allow_blank=True)
+    delivery_type = serializers.ChoiceField(choices=Delivery.DeliveryType.choices, required=False, default=Delivery.DeliveryType.DROPOFF)
     delivery_fee = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)
     scheduled_time = serializers.DateTimeField(required=False, allow_null=True)
     notes = serializers.CharField(required=False, allow_blank=True)
@@ -235,6 +248,7 @@ class PublicDeliveryRequestSerializer(serializers.Serializer):
     delivery_latitude = serializers.DecimalField(max_digits=9, decimal_places=6, required=False, allow_null=True)
     delivery_longitude = serializers.DecimalField(max_digits=9, decimal_places=6, required=False, allow_null=True)
     zone = serializers.CharField(max_length=60, required=False, allow_blank=True)
+    delivery_type = serializers.ChoiceField(choices=Delivery.DeliveryType.choices, required=False, default=Delivery.DeliveryType.DROPOFF)
     scheduled_time = serializers.DateTimeField(required=False, allow_null=True)
     notes = serializers.CharField(required=False, allow_blank=True)
 

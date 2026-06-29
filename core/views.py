@@ -1,5 +1,6 @@
 import uuid
 from datetime import timedelta
+from decimal import Decimal
 
 from django.db import transaction
 from django.db.models import Q
@@ -39,7 +40,7 @@ from .models import (
 )
 from .permissions import CourierTrackingPermission, OrganizationScopedPermission, PlatformPermission
 from .observability import operational_metrics, readiness_checks
-from .realtime import broadcast_organization_event
+from .realtime import broadcast_chat_event, broadcast_organization_event
 from .security import (
     confirm_mfa,
     create_mfa_setup,
@@ -73,6 +74,7 @@ from .serializers import (
     CourierSerializer,
     CustomDomainSerializer,
     CustomerSerializer,
+    CustomerCreateSerializer,
     DeliveryHeatmapQuerySerializer,
     DeliveryCreateSerializer,
     DeliverySerializer,
@@ -105,11 +107,15 @@ from .services import (
     create_delivery,
     create_domain_verification,
     create_upload_intent,
+    customer_initials,
+    ensure_default_roles,
+    get_or_create_customer,
     get_or_create_public_site,
     complete_upload,
     delivery_zone_heatmap,
     nearest_couriers,
     overview_metrics,
+    pickup_surcharge,
     record_tracking,
     transition_delivery,
     update_public_site,
@@ -147,7 +153,7 @@ def _initials(value: str) -> str:
 
 def _broadcast_courier_message(message: CourierMessage) -> None:
     contact_user_id = str(message.contact_user_id) if message.contact_user_id else None
-    broadcast_organization_event(
+    broadcast_chat_event(
         message.organization_id,
         "courier.message_created",
         {
@@ -164,7 +170,7 @@ def _broadcast_courier_messages_read(organization_id, courier_id, contact_user_i
     if not message_ids:
         return
     contact_user_id = str(contact_user_id) if contact_user_id else None
-    broadcast_organization_event(
+    broadcast_chat_event(
         organization_id,
         "courier.messages_read",
         {
@@ -381,21 +387,7 @@ class BusinessSignupView(APIView):
                     },
                 },
             )
-            permissions = [
-                OrganizationPermission.objects.create(
-                    organization=organization,
-                    code=code,
-                    description=code.replace("_", " ").title(),
-                )
-                for code in DEFAULT_ORGANIZATION_PERMISSIONS
-            ]
-            owner_role = OrganizationRole.objects.create(
-                organization=organization,
-                key="owner",
-                label="Owner",
-                description="Full access to the business workspace.",
-            )
-            owner_role.permissions.set(permissions)
+            owner_role = ensure_default_roles(organization)["owner"]
             owner = OrganizationUser.objects.create(
                 organization=organization,
                 name=data["owner_name"],
@@ -966,9 +958,16 @@ class PublicDeliveryRequestView(APIView):
                 "longitude": str(data.pop("delivery_longitude", "")) or None,
             },
         }
+        customer = get_or_create_customer(
+            organization,
+            name=str(data.get("customer_name") or ""),
+            phone=str(data.get("customer_phone") or ""),
+            email=str(data.get("customer_email") or ""),
+            zone=str(data.get("zone") or ""),
+        )
         delivery = create_delivery(
             organization=organization,
-            customer=get_or_create_public_customer(organization, data),
+            customer=customer,
             status=Delivery.Status.REQUESTED,
             source="public_site",
             source_label="Public website",
@@ -977,35 +976,6 @@ class PublicDeliveryRequestView(APIView):
             metadata={"customer_submitted": True, "coordinates": coordinates},
         )
         return Response(DeliverySerializer(delivery).data, status=status.HTTP_201_CREATED)
-
-
-def get_or_create_public_customer(organization: Organization, data: dict) -> Customer:
-    name = str(data.get("customer_name") or "").strip()
-    phone = str(data.get("customer_phone") or "").strip()
-    zone = str(data.get("zone") or "").strip()
-    customer = None
-    if phone:
-        customer = Customer.objects.filter(organization=organization, phone=phone).first()
-    if customer:
-        update_fields = ["updated_at"]
-        if name and customer.name != name:
-            customer.name = name
-            customer.initials = "".join(part[0] for part in name.split() if part)[:2].upper()
-            update_fields.extend(["name", "initials"])
-        if zone and customer.zone != zone:
-            customer.zone = zone
-            update_fields.append("zone")
-        if len(update_fields) > 1:
-            customer.save(update_fields=update_fields)
-        return customer
-    return Customer.objects.create(
-        organization=organization,
-        name=name,
-        phone=phone,
-        initials="".join(part[0] for part in name.split() if part)[:2].upper(),
-        zone=zone,
-        status=Customer.Status.NEW,
-    )
 
 
 class PublicDeliveryTrackView(APIView):
@@ -1130,6 +1100,37 @@ class CustomerViewSet(TenantViewSet):
     queryset = Customer.objects.all()
     required_permission = "view_customers"
 
+    def create(self, request, *args, **kwargs):
+        actor = getattr(request, "actor", None)
+        if not isinstance(actor, OrganizationUser) or not actor.role.permissions.filter(code="manage_customers").exists():
+            return Response({"detail": "Missing manage_customers permission."}, status=status.HTTP_403_FORBIDDEN)
+        organization = self.get_organization()
+        serializer = CustomerCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        name = data["name"].strip()
+        phone = (data.get("phone") or "").strip()
+        email = (data.get("email") or "").strip().lower()
+
+        if email and Customer.objects.filter(organization=organization, email__iexact=email).exists():
+            return Response({"detail": "A customer with this email already exists."}, status=status.HTTP_409_CONFLICT)
+        if phone and Customer.objects.filter(organization=organization, phone=phone).exists():
+            return Response({"detail": "A customer with this phone number already exists."}, status=status.HTTP_409_CONFLICT)
+
+        branch = require_branch(request)
+        customer = Customer.objects.create(
+            organization=organization,
+            branch=branch,
+            name=name,
+            phone=phone,
+            email=email or None,
+            zone=(data.get("zone") or "").strip(),
+            initials=customer_initials(name),
+            status=Customer.Status.NEW,
+        )
+        write_audit(action="customer.created", organization=organization, actor=actor, request=request, metadata={"customer_id": str(customer.id)})
+        return Response(CustomerSerializer(customer).data, status=status.HTTP_201_CREATED)
+
 
 class CourierViewSet(TenantViewSet):
     serializer_class = CourierSerializer
@@ -1196,6 +1197,9 @@ class DeliveryViewSet(TenantViewSet):
         return qs.order_by("-created_at")
 
     def create(self, request, *args, **kwargs):
+        actor = getattr(request, "actor", None)
+        if not isinstance(actor, OrganizationUser) or not actor.role.permissions.filter(code="manage_orders").exists():
+            return Response({"detail": "Missing manage_orders permission."}, status=status.HTTP_403_FORBIDDEN)
         organization = self.get_organization()
         data = request.data.copy()
         branch = require_branch(request)
@@ -1203,7 +1207,24 @@ class DeliveryViewSet(TenantViewSet):
             data["branch"] = str(branch.id)
         serializer = DeliveryCreateSerializer(data=data, context={"organization": organization})
         serializer.is_valid(raise_exception=True)
-        delivery = create_delivery(organization=organization, actor=getattr(request, "actor", None), request=request, **serializer.validated_data)
+        validated = serializer.validated_data
+        # Every order attaches to a single, deduplicated customer profile.
+        if not validated.get("customer"):
+            validated["customer"] = get_or_create_customer(
+                organization,
+                name=validated.get("customer_name", ""),
+                phone=validated.get("customer_phone", ""),
+                zone=validated.get("zone", ""),
+                branch=validated.get("branch"),
+            )
+        # A pickup requires the courier to commute to collect the item, so it
+        # adds a surcharge on top of the base delivery fee.
+        base_fee = validated.get("delivery_fee") or Decimal("0")
+        if validated.get("delivery_type") == Delivery.DeliveryType.PICKUP:
+            validated["delivery_fee"] = base_fee + pickup_surcharge(organization)
+        else:
+            validated["delivery_fee"] = base_fee
+        delivery = create_delivery(organization=organization, actor=actor, request=request, **validated)
         return Response(DeliverySerializer(delivery).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["post"])

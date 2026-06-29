@@ -273,7 +273,7 @@ class Customer(TenantScopedModel):
     name = models.CharField(max_length=120)
     branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, related_name="customers", blank=True, null=True)
     phone = models.CharField(max_length=40, blank=True)
-    email = models.EmailField(blank=True)
+    email = models.EmailField(blank=True, null=True)
     initials = models.CharField(max_length=4, blank=True)
     delivery_stats = models.JSONField(default=dict, blank=True)
     total_orders = models.PositiveIntegerField(default=0)
@@ -354,6 +354,10 @@ class Delivery(TenantScopedModel):
         FAILED = "failed", "Failed"
         CANCELLED = "cancelled", "Cancelled"
 
+    class DeliveryType(models.TextChoices):
+        PICKUP = "pickup", "Pickup"
+        DROPOFF = "dropoff", "Drop-off"
+
     customer = models.ForeignKey(Customer, on_delete=models.PROTECT, related_name="deliveries", blank=True, null=True)
     courier = models.ForeignKey(Courier, on_delete=models.SET_NULL, related_name="deliveries", blank=True, null=True)
     branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, related_name="deliveries", blank=True, null=True)
@@ -363,6 +367,7 @@ class Delivery(TenantScopedModel):
     pickup_address = models.CharField(max_length=240)
     delivery_address = models.CharField(max_length=240)
     zone = models.CharField(max_length=60, blank=True)
+    delivery_type = models.CharField(max_length=20, choices=DeliveryType.choices, default=DeliveryType.DROPOFF)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     source = models.CharField(max_length=80, default="dashboard")
     source_label = models.CharField(max_length=120, blank=True)

@@ -1,6 +1,10 @@
 # environment variables
+env.production.example
 .env*
+
 venv/
+scripts/
+
 
 # pycache files
 __pycache__/
@@ -8,3 +12,6 @@ __pycache__/
 
 # AI Files
 PRD_extracted.txt
+
+# collected static assets (build artifact)
+staticfiles/

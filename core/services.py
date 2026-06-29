@@ -15,11 +15,14 @@ from .models import (
     AnalyticsSnapshot,
     Courier,
     CustomDomain,
+    Customer,
     Delivery,
     DeliveryEvent,
     ImpersonationSession,
     Notification,
     Organization,
+    OrganizationPermission,
+    OrganizationRole,
     RefreshToken,
     PublicSite,
     PublicSiteBlock,
@@ -55,6 +58,109 @@ def tenant_queryset(model, organization: Organization):
 
 
 @transaction.atomic
+def ensure_default_roles(organization: Organization) -> dict:
+    """Idempotently provision the canonical roles + permissions for an org.
+    Existing roles keep their (possibly customized) permissions; only newly
+    created roles get the blueprint permission set."""
+    from .roles import ALL_PERMISSIONS, ROLE_BLUEPRINTS
+
+    permissions = {}
+    for code in ALL_PERMISSIONS:
+        permissions[code], _ = OrganizationPermission.objects.get_or_create(
+            organization=organization,
+            code=code,
+            defaults={"description": code.replace("_", " ").title()},
+        )
+    roles = {}
+    for key, label, description, codes in ROLE_BLUEPRINTS:
+        role, created = OrganizationRole.objects.get_or_create(
+            organization=organization,
+            key=key,
+            defaults={"label": label, "description": description},
+        )
+        if created:
+            role.permissions.set([permissions[code] for code in codes])
+        roles[key] = role
+    return roles
+
+
+def customer_initials(name: str) -> str:
+    return "".join(part[0] for part in (name or "").split() if part)[:2].upper()
+
+
+def get_or_create_customer(
+    organization: Organization,
+    *,
+    name: str = "",
+    phone: str = "",
+    email: str = "",
+    zone: str = "",
+    branch=None,
+) -> Customer:
+    """Resolve a unique customer for an org by email then phone, creating one if
+    none matches. Used by the admin order/customer flows and public requests so
+    every delivery is attached to a single, deduplicated customer profile."""
+    name = (name or "").strip()
+    phone = (phone or "").strip()
+    email = (email or "").strip().lower() or None
+    zone = (zone or "").strip()
+
+    customer = None
+    if email:
+        customer = Customer.objects.filter(organization=organization, email__iexact=email).first()
+    if not customer and phone:
+        customer = Customer.objects.filter(organization=organization, phone=phone).first()
+
+    if customer:
+        updates = ["updated_at"]
+        if name and customer.name != name:
+            customer.name = name
+            customer.initials = customer_initials(name)
+            updates.extend(["name", "initials"])
+        if email and not customer.email:
+            customer.email = email
+            updates.append("email")
+        if phone and not customer.phone:
+            customer.phone = phone
+            updates.append("phone")
+        if zone and customer.zone != zone:
+            customer.zone = zone
+            updates.append("zone")
+        if branch and not customer.branch_id:
+            customer.branch = branch
+            updates.append("branch")
+        if len(updates) > 1:
+            customer.save(update_fields=updates)
+        return customer
+
+    return Customer.objects.create(
+        organization=organization,
+        name=name,
+        phone=phone,
+        email=email,
+        zone=zone,
+        branch=branch,
+        initials=customer_initials(name),
+        status=Customer.Status.NEW,
+    )
+
+
+DEFAULT_PICKUP_SURCHARGE = Decimal("500")
+
+
+def pickup_surcharge(organization: Organization) -> Decimal:
+    """Commute surcharge applied when a delivery requires the courier to pick up
+    the item. Configurable per org via metadata.settings.pickupSurcharge."""
+    blob = (getattr(organization, "metadata", None) or {}).get("settings", {})
+    raw = blob.get("pickupSurcharge")
+    if raw in (None, ""):
+        return DEFAULT_PICKUP_SURCHARGE
+    try:
+        return Decimal(str(raw))
+    except (ArithmeticError, ValueError, TypeError):
+        return DEFAULT_PICKUP_SURCHARGE
+
+
 def create_delivery(*, organization: Organization, actor=None, request=None, **data) -> Delivery:
     with organization_context(organization):
         reference = data.pop("reference", None) or _delivery_reference()
@@ -269,6 +375,43 @@ def record_tracking(
         return log
 
 
+def _growth_pct(current, previous) -> float:
+    """Signed period-over-period growth as a percentage, rounded to 1 dp."""
+    current = float(current or 0)
+    previous = float(previous or 0)
+    if previous == 0:
+        return 100.0 if current > 0 else 0.0
+    return round((current - previous) / previous * 100, 1)
+
+
+def _overview_growth(deliveries) -> dict:
+    """Compare current vs previous comparable windows (by created date)."""
+    today = timezone.localdate()
+    yesterday = today - timedelta(days=1)
+    week_start = today - timedelta(days=6)
+    prev_week_start = today - timedelta(days=13)
+    prev_week_end = today - timedelta(days=7)
+
+    def on_day(date):
+        return deliveries.filter(created_at__date=date)
+
+    def between(start, end):
+        return deliveries.filter(created_at__date__gte=start, created_at__date__lte=end)
+
+    def revenue_of(qs):
+        return qs.filter(status=Delivery.Status.DELIVERED).aggregate(total=Sum("delivery_fee"))["total"] or Decimal("0")
+
+    def failed_of(qs):
+        return qs.filter(status=Delivery.Status.FAILED).count()
+
+    return {
+        "deliveries_wow": _growth_pct(between(week_start, today).count(), between(prev_week_start, prev_week_end).count()),
+        "deliveries_dod": _growth_pct(on_day(today).count(), on_day(yesterday).count()),
+        "failed_dod": _growth_pct(failed_of(on_day(today)), failed_of(on_day(yesterday))),
+        "revenue_dod": _growth_pct(revenue_of(on_day(today)), revenue_of(on_day(yesterday))),
+    }
+
+
 def overview_metrics(organization: Organization, branch=None) -> dict:
     deliveries = Delivery.objects.for_organization(organization)
     couriers_qs = Courier.objects.for_organization(organization)
@@ -298,6 +441,7 @@ def overview_metrics(organization: Organization, branch=None) -> dict:
         "revenue": counts["revenue"] or Decimal("0"),
         "average_delivery_fee": counts["avg_fee"] or Decimal("0"),
         "success_rate": round(((counts["delivered"] or 0) / finished) * 100) if finished else 100,
+        "growth": _overview_growth(deliveries),
     }
 
 

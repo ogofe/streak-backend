@@ -10,3 +10,5 @@ strawberry-graphql==0.316.0
 argon2-cffi==25.1.0
 psycopg[binary]==3.3.4
 boto3>=1.34,<2
+whitenoise==6.8.2
+channels-redis==4.2.1

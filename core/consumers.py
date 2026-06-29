@@ -11,18 +11,22 @@ from django.utils import timezone
 class OrganizationRealtimeConsumer(AsyncJsonWebsocketConsumer):
     async def connect(self):
         self.organization_id = None
-        token = parse_qs(self.scope.get("query_string", b"").decode()).get("token", [None])[0]
+        query = parse_qs(self.scope.get("query_string", b"").decode())
+        token = query.get("token", [None])[0]
+        stream = query.get("stream", ["ops"])[0]
         actor = await self._authenticate(token)
         if not actor:
             await self.close(code=4401)
             return
         self.organization_id = str(actor.organization_id)
-        self.group_name = f"org.{self.organization_id}"
+        base = f"org.{self.organization_id}"
+        # One socket per stream: chat traffic is isolated from operational events.
+        self.group_name = f"{base}.chat" if stream == "chat" else base
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
 
     async def disconnect(self, close_code):
-        if getattr(self, "organization_id", None):
+        if getattr(self, "group_name", None):
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
 
     async def receive_json(self, content, **kwargs):
@@ -67,13 +71,16 @@ class CourierRealtimeConsumer(AsyncJsonWebsocketConsumer):
             await self.close(code=4401)
             return
         self.organization_id = str(courier.organization_id)
-        self.group_name = f"org.{self.organization_id}"
-        await self.channel_layer.group_add(self.group_name, self.channel_name)
+        # Couriers receive both operational and chat traffic.
+        base = f"org.{self.organization_id}"
+        self.joined_groups = [base, f"{base}.chat"]
+        for group in self.joined_groups:
+            await self.channel_layer.group_add(group, self.channel_name)
         await self.accept()
 
     async def disconnect(self, close_code):
-        if getattr(self, "organization_id", None):
-            await self.channel_layer.group_discard(self.group_name, self.channel_name)
+        for group in getattr(self, "joined_groups", []):
+            await self.channel_layer.group_discard(group, self.channel_name)
 
     async def receive_json(self, content, **kwargs):
         if content.get("type") == "ping":

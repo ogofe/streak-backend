@@ -207,7 +207,7 @@ class BackendFoundationTests(APITestCase):
         )
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {staff_login.data['access']}")
 
-        with patch("core.views.broadcast_organization_event") as broadcast:
+        with patch("core.views.broadcast_chat_event") as broadcast:
             sent = self.client.post(
                 reverse("courier-messages-list"),
                 {"courier_id": str(self.courier.id), "body": "Head to the Kaduna depot."},
@@ -234,7 +234,7 @@ class BackendFoundationTests(APITestCase):
         self.assertEqual(inbox.status_code, 200)
         self.assertEqual(inbox.data[0]["body"], "Head to the Kaduna depot.")
 
-        with patch("core.views.broadcast_organization_event") as broadcast:
+        with patch("core.views.broadcast_chat_event") as broadcast:
             reply = self.client.post(
                 reverse("courier-own-messages"),
                 {"contact_user_id": str(self.user.id), "body": "On my way."},
