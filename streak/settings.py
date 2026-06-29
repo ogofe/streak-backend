@@ -51,14 +51,16 @@ DEBUG = env_bool("DJANGO_DEBUG", True)
 
 # Production traffic is allowed from the deployment IP and these domains
 # (apex + any subdomain). A leading dot lets Django match all subdomains.
-PRODUCTION_HOSTS = "13.51.176.215,.vercel.app,.streakdelivery.com,.onstreak.online"
-ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", f"localhost,127.0.0.1,[::1],{PRODUCTION_HOSTS}")
+PRODUCTION_HOSTS = "13.51.176.215,.vercel.app,.streakdelivery.com,.onstreak.online,ec2-13-51-176-215.eu-north-1.compute.amazonaws.com"
+ALLOWED_HOSTS = env_list(
+    "DJANGO_ALLOWED_HOSTS",
+    f"localhost,127.0.0.1,[::1],{PRODUCTION_HOSTS}")
 
 # Trusted origins for CSRF / unsafe requests (scheme is required; wildcards allowed).
 CSRF_TRUSTED_ORIGINS = env_list(
     "DJANGO_CSRF_TRUSTED_ORIGINS",
     "https://*.vercel.app,https://*.streakdelivery.com,https://*.onstreak.online,"
-    "https://13.51.176.215,http://13.51.176.215",
+    "https://13.51.176.215,http://13.51.176.215,https://ec2-13-51-176-215.eu-north-1.compute.amazonaws.com",
 )
 
 # CORS: cross-origin browser requests from the dashboard, customer sites and previews.
@@ -69,8 +71,7 @@ CORS_ALLOW_ALL_ORIGINS = env_bool("DJANGO_CORS_ALLOW_ALL_ORIGINS", DEBUG)
 # regexes so configs that list "*.example.com" under origins still work.
 _raw_cors_origins = env_list(
     "DJANGO_CORS_ALLOWED_ORIGINS",
-    "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,"
-    "http://13.51.176.215,https://13.51.176.215",
+    "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://13.51.176.215,https://13.51.176.215,http://ec2-13-51-176-215.eu-north-1.compute.amazonaws.com,https://ec2-13-51-176-215.eu-north-1.compute.amazonaws.com",
 )
 CORS_ALLOWED_ORIGINS = [origin for origin in _raw_cors_origins if "*" not in origin and "://" in origin]
 
@@ -87,6 +88,7 @@ CORS_ALLOWED_ORIGIN_REGEXES = [
 # Application definition
 
 INSTALLED_APPS = [
+        'daphne',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
