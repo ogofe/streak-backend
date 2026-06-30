@@ -12,6 +12,7 @@ from decimal import Decimal
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 from django.db import transaction
+from django.db.models import Count, Max, Q, Sum
 from django.utils import timezone
 
 from core.models import (
@@ -78,7 +79,7 @@ ORG_SPECS = [
             {"email": "manager.kaduna@swiftcouriers.com", "name": "Kaduna Manager", "initials": "KM",
              "role": "branch_manager", "branch": "kaduna"},
             {"email": "manager.abuja@swiftcouriers.com", "name": "Abuja Manager", "initials": "AM",
-             "role": "dispatcher", "branch": "abuja"},
+             "role": "fleet_manager", "branch": "abuja"},
         ],
         "customers": [
             {"name": "Bisi Adeyemi", "phone": "+2348030001001", "email": "bisi.adeyemi@example.com",
@@ -89,19 +90,19 @@ ORG_SPECS = [
              "zone": "Kaduna Central", "status": "new", "branch": "kaduna"},
         ],
         "couriers": [
-            {"name": "Amina Yusuf", "initials": "AY", "phone": "+2348010005101", "branch": "kaduna",
+            {"name": "Amina Yusuf", "initials": "AY", "phone": "+2348010004101", "branch": "kaduna",
              "status": "delivering", "zone": "Kaduna Central", "vehicle": "Motorbike KD-41",
              "location": "Ahmadu Bello Way, Kaduna", "lat": "10.523000", "lng": "7.438000",
-             "battery": 84, "completion": 96, "email": "amina.yusuf2@swiftcouriers.com"},
-            {"name": "Musa Bello", "initials": "MB", "phone": "+2348010005102", "branch": "abuja",
+             "battery": 84, "completion": 96, "email": "amina.yusuf@swiftcouriers.com"},
+            {"name": "Musa Bello", "initials": "MB", "phone": "+2348010004102", "branch": "abuja",
              "status": "available", "zone": "Abuja Metro", "vehicle": "Motorbike ABJ-22",
              "location": "Wuse 2, Abuja", "lat": "9.082000", "lng": "7.401000",
-             "battery": 91, "completion": 94, "email": "musa.bello2@swiftcouriers.com"},
-            {"name": "Ngozi Eze", "initials": "NE", "phone": "+2348010005103", "branch": "kaduna",
+             "battery": 91, "completion": 94, "email": "musa.bello@swiftcouriers.com"},
+            {"name": "Ngozi Eze", "initials": "NE", "phone": "+2348010004103", "branch": "kaduna",
              "status": "delivering", "zone": "Kaduna Central", "vehicle": "Van KD-09",
              "location": "Barnawa, Kaduna", "lat": "10.505000", "lng": "7.410000",
              "battery": 67, "completion": 92, "email": "ngozi.eze@swiftcouriers.com"},
-            {"name": "Tunde Bakare", "initials": "TB", "phone": "+2348010005104", "branch": "abuja",
+            {"name": "Tunde Bakare", "initials": "TB", "phone": "+2348010004104", "branch": "abuja",
              "status": "offline", "zone": "Abuja Metro", "vehicle": "Motorbike ABJ-77",
              "location": "Garki, Abuja", "lat": "9.070000", "lng": "7.390000",
              "battery": 40, "completion": 88, "email": "tunde.bakare@swiftcouriers.com"},
@@ -134,7 +135,7 @@ ORG_SPECS = [
             {"email": "owner@baobablogistics.co.ke", "name": "Baobab Owner", "initials": "BO",
              "role": "owner", "branch": None},
             {"email": "dispatch@baobablogistics.co.ke", "name": "Nairobi Dispatcher", "initials": "ND",
-             "role": "dispatcher", "branch": "nairobi"},
+             "role": "fleet_manager", "branch": "nairobi"},
             {"email": "support@baobablogistics.co.ke", "name": "Nairobi Support", "initials": "NS",
              "role": "customer_support", "branch": "nairobi"},
         ],
@@ -352,6 +353,19 @@ class Command(BaseCommand):
                     **self._status_timestamps(status, now),
                 },
             )
+
+        # Reflect each customer's linked deliveries on their profile so order
+        # history / totals show up on the customers page.
+        for customer in customers:
+            agg = Delivery.objects.filter(organization=org, customer=customer).aggregate(
+                orders=Count("id"),
+                spent=Sum("delivery_fee", filter=Q(status=Delivery.Status.DELIVERED)),
+                last=Max("created_at"),
+            )
+            customer.total_orders = agg["orders"] or 0
+            customer.total_spent = agg["spent"] or Decimal("0")
+            customer.last_order_at = agg["last"]
+            customer.save(update_fields=["total_orders", "total_spent", "last_order_at"])
 
     # --------------------------------------------------------------------- utils
     @staticmethod

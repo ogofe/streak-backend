@@ -1137,6 +1137,27 @@ class CourierViewSet(TenantViewSet):
     queryset = Courier.objects.all()
     required_permission = "view_fleet"
 
+    def create(self, request, *args, **kwargs):
+        actor = getattr(request, "actor", None)
+        if not isinstance(actor, OrganizationUser) or not actor.role.permissions.filter(code="manage_fleet").exists():
+            return Response({"detail": "Missing manage_fleet permission."}, status=status.HTTP_403_FORBIDDEN)
+        organization = self.get_organization()
+        data = request.data.copy()
+        name = str(data.get("name", "")).strip()
+        if name and not str(data.get("initials", "")).strip():
+            data["initials"] = "".join(part[0] for part in name.split()[:2]).upper()
+        branch = require_branch(request)
+        if branch and not data.get("branch"):
+            data["branch"] = str(branch.id)
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        save_kwargs = {"organization": organization}
+        password = str(request.data.get("password", "")).strip()
+        if password:
+            save_kwargs["password_hash"] = hash_password(password)
+        courier = serializer.save(**save_kwargs)
+        return Response(self.get_serializer(courier).data, status=status.HTTP_201_CREATED)
+
     @action(detail=True, methods=["post"])
     def status(self, request, pk=None):
         courier = self.get_object()

@@ -39,16 +39,10 @@ ROLE_BLUEPRINTS = [
         ],
     ),
     (
-        "dispatcher",
-        "Dispatcher",
-        "Operational access to orders and fleet.",
-        ["view_overview", "view_orders", "manage_orders", "view_fleet", "manage_fleet", "view_customers", "view_analytics"],
-    ),
-    (
         "fleet_manager",
         "Fleet Manager",
-        "Fleet-focused operational access.",
-        ["view_overview", "view_orders", "view_fleet", "manage_fleet", "view_analytics"],
+        "Manages couriers and assigns deliveries to them.",
+        ["view_overview", "view_orders", "manage_orders", "view_fleet", "manage_fleet", "view_customers", "view_analytics"],
     ),
     (
         "customer_support",
